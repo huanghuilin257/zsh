@@ -123,3 +123,108 @@ pair：  [N,N,128]
 所以更准确的核心总结是：
 
 > Input embedding 内部先把序列、MSA、原子属性和参考几何信息编码成内部的 `[N,447]` 特征，再投影为图中明确标记的 `inputs [N,384]`。`inputs` 经过独立变换产生 `single [N,384]`，同时通过左右投影构造 `pair [N,N,128]`。因此，图中的三个输出应当明确区分为 `inputs`、`single` 和 `pair`，而 `[N,447]` 只是内部中间特征。
+
+## MSA 分支与 token 分支的区别
+
+MSA 的原始特征和 token-level 的输入特征是两条并行分支，不能把它们的维度直接相加。
+
+### MSA Module 分支
+
+每条 MSA 序列、每个位置的特征大致由以下部分组成：
+
+```text
+31 维 residue/nucleotide 类型
++ 1 维 has_deletion
++ 1 维 deletion_value
+= 33 维
+```
+
+因此原始 MSA 特征为：
+
+```text
+[M, N, 33]
+```
+
+经过线性层后得到：
+
+```text
+[M, N, 33]
+    ↓ Linear
+[M, N, 64]
+```
+
+这个 `[M,N,64]` 表示进入 AF3 的 MSA Module/MSA stack，用于 MSA row attention、MSA column attention 等操作，并通过 MSA 相关模块把进化信息传递给 pair 表示。
+
+它不会直接拼接到 `[N,447]` 中。
+
+### Token-level 输入分支
+
+另一条分支使用 MSA 的统计摘要，而不是保存每一条 MSA 序列的完整表示：
+
+```text
+token type one-hot：[N,31]
+MSA profile：      [N,31]
+deletion mean：    [N,1]
+```
+
+这部分是：
+
+```text
+31 + 31 + 1 = 63 维
+```
+
+再加上 atom/conformer encoder 产生的：
+
+```text
+[N,384]
+```
+
+形成内部的：
+
+```text
+[N,63] + [N,384]
+    ↓
+[N,447]
+```
+
+然后经过 InputFeatureEmbedder 得到图中标记的：
+
+```text
+inputs：[N,384]
+```
+
+再由 `inputs` 产生：
+
+```text
+single：[N,384]
+pair：  [N,N,128]
+```
+
+因此，维度关系不是 `33 + 64 + 384`，而是两条并行路径：
+
+```text
+MSA 原始特征 [M,N,33]
+    ↓ Linear
+MSA 表示 [M,N,64]
+    ↓
+MSA Module
+    ↓
+影响 pair 表示
+```
+
+```text
+token type + profile + deletion mean + atom embedding
+    ↓
+内部 target_feat [N,447]
+    ↓ InputFeatureEmbedder
+inputs [N,384]
+    ├── LinearNoBias → single [N,384]
+    └── 左右 pair 投影 → pair [N,N,128]
+```
+
+所以可以记住：
+
+- `[M,N,64]`：给 MSA Module 使用；
+- `[N,447]`：token-level 的内部中间输入特征；
+- `[N,384]`：图中 Input Embedder 输出的 `inputs`，也是 single 初始化和 pair 初始化的来源；
+- `[N,N,128]`：token 对之间的 pair 表示。
