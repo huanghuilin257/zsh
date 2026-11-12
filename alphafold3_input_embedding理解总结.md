@@ -30,7 +30,7 @@ atom-level attention
 得到 [N, 384] 的 atom-derived token embedding
     → 与 [N, 63] 的序列特征拼接
 
-得到 target_feat：
+得到内部 target_feat：
     [N, 447]
 
 再由它生成：
@@ -83,20 +83,35 @@ pair：
 - deletion mean 通常为零值或 masked；
 - 配体真正的信息来自原子属性、化学键和 conformer。
 
-5. **`[N,447]`、`[N,384]`、`[N,N,128]` 是不同阶段的表示。**
+5. **必须区分内部特征和图中标记的三个输出。**
 
-在当前 AF3 典型配置下：
+在当前 AF3 典型配置下，`[N,447]` 是代码中的内部 `target_feat`，还不是图中标记的 `inputs` 输出。图中三个表示应明确写成：
 
 ```text
-target_feat / s_inputs：
-    [N, 447]
-
-初始 single：
+inputs / s_i^inputs：
     [N, 384]
 
-初始 pair：
+single / s_i^init：
+    [N, 384]
+
+pair / z_ij^init：
     [N, N, 128]
 ```
+
+它们之间的关系是：
+
+```text
+原始特征和 atom embedding
+    → 内部 target_feat：[N,447]
+    → InputFeatureEmbedder
+    → inputs：[N,384]
+
+inputs：[N,384]
+    ├── LinearNoBias → single：[N,384]
+    └── 左右 pair 投影 → pair：[N,N,128]
+```
+
+`inputs` 和 `single` 的通道数相同，但不是同一个张量：`inputs` 是输入编码器的输出，`single` 是经过独立线性变换后交给主干网络的初始 single 状态。这个线性层的作用是重新混合特征通道和适配后续网络，不是为了改变维度或专门为了反向传播。
 
 之后 Template Module、MSA Module、Pairformer 和 recycling 会继续更新 single 和 pair，但形状通常保持：
 
@@ -105,6 +120,6 @@ single：[N,384]
 pair：  [N,N,128]
 ```
 
-所以你最后的核心总结可以写成：
+所以更准确的核心总结是：
 
-> Input embedding 把序列、MSA、原子属性和参考几何信息统一编码成 token 表示；atom cross-attention 先更新原子级特征，再把同一 token 内的原子聚合成 384 维 token 特征；这些 token 特征用于初始化 `[N,384]` 的 single 和 `[N,N,128]` 的 pair。
+> Input embedding 内部先把序列、MSA、原子属性和参考几何信息编码成内部的 `[N,447]` 特征，再投影为图中明确标记的 `inputs [N,384]`。`inputs` 经过独立变换产生 `single [N,384]`，同时通过左右投影构造 `pair [N,N,128]`。因此，图中的三个输出应当明确区分为 `inputs`、`single` 和 `pair`，而 `[N,447]` 只是内部中间特征。
